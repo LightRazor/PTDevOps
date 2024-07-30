@@ -1,0 +1,196 @@
+- name: Add IP address of all hosts to all hosts
+  become: yes
+  hosts: tg_bot
+  gather_facts: yes
+  tasks:
+  - lineinfile:
+      dest: /etc/hosts
+      regexp: '.*{{ item }}$'
+      line: "{{ hostvars[item].ansible_host }} {{item}}"
+      state: present
+    when: hostvars[item].ansible_host is defined
+    with_items: "{{ groups.all }}"
+
+- name: PG Install and init
+  hosts: tg_bot
+  become: yes
+  gather_facts: yes
+  tags: [common]
+  tasks:
+    - name: Install PG
+      apt:
+        name:
+           - postgresql
+           - postgresql-contrib
+           - rsync
+        state: present 
+    - name: Start PostgreSQL server
+      systemd: 
+       name: postgresql
+       enabled: yes
+       state: started
+    - name: Change postgres password
+      shell: sudo -u postgres psql -c "ALTER USER postgres WITH password '{{ db_password }}'"
+
+- name: Master Setup
+  hosts: host01
+  become: yes
+  gather_facts: yes
+  tags: [pgmaster]
+  tasks:
+   - name: Create archive directory
+     file:
+      path: /opt/pg_archives
+      mode: 0700
+      owner: postgres
+      group: postgres
+      state: directory
+  
+   - name: Update postgresql.conf
+     lineinfile:
+        path: /etc/postgresql/13/main/postgresql.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+     with_items:
+        - { regexp: "#listen_addresses = 'localhost'", line: "listen_addresses = '*'"}
+        - { regexp: '#archive_mode = off', line: 'archive_mode = on' }
+        - { regexp: '#max_wal_senders = 10', line: 'max_wal_senders = 5' }
+        - { regexp: '#wal_level = replica', line: 'wal_level = replica' }
+        - { regexp: '#archive_command = ''', line: archive_command = 'rsync -a %p /opt/pg_archives/%f'}
+        - { regexp: '#log_replication_commands = off', line: 'log_replication_commands = on'}
+        - { regexp: "#log_destination = 'stderr", line: "log_destination = 'stderr'"}
+        - { regexp: "#logging_collector = off", line: "logging_collector = on"}
+        - { regexp: "#log_directory = 'log'", line: "log_directory = 'log'"}
+    
+   - name: Update pg_hba.conf
+     blockinfile:
+        path: /etc/postgresql/13/main/pg_hba.conf
+        insertafter: '#host replication postgres ::1/128 ident'
+        block: |
+          # Localhost
+          host replication replica 127.0.0.1/32 trust
+          # PostgreSQL Master IP address
+          host replication {{replication_user}} {{ansible_default_ipv4.address}}/32 trust
+          # PostgreSQL Slave IP address
+          host replication {{replication_user}} {{ hostvars['host02'].ansible_default_ipv4.address }}/32 trust
+          #Connect PgAdmin
+          host  all all 0.0.0.0/0 md5
+    
+   - name: Restart PostgreSQL server
+     systemd:
+        name: postgresql
+        enabled: yes
+        state: restarted
+    
+   - name:  Create replication user
+     shell: sudo -u postgres psql -c "ALTER USER  {{replication_user}} REPLICATION LOGIN ENCRYPTED PASSWORD '{{ replica_password }}'"
+- name: Setup Slave
+  hosts: host02
+  become: yes
+  gather_facts: yes
+  tags: [pgslave]
+  tasks:
+  - name: Stop PostgreSQL server
+    systemd:
+     name: postgresql
+     state: stopped
+  
+  - name: Remove files form folder 
+    shell: rm -rf /var/lib/postgresql/13/data/*
+  
+  - name: PG init
+    shell: su - postgres -c "/usr/lib/postgresql/13/bin/initdb -D /var/lib/postgresql/13/data/"
+ 
+  - name: Remove files form folder 
+    shell: rm -rf /var/lib/postgresql/13/data/*
+
+  - name: Backup initial data from master
+    shell: su - postgres -c "PGPASSWORD={{ replica_password }} pg_basebackup -D  /var/lib/postgresql/13/data/ -h {{ hostvars['host01'].ansible_default_ipv4.address }} -p 5432 -U replica -Xs -R -P"
+
+  - name: Create signal file
+    file:
+     path: /var/lib/postgresql/13/data/standby.signal
+     state: touch  
+
+  - name: Update postgresql.conf
+    lineinfile:
+      path: /etc/postgresql/13/main/postgresql.conf
+      regexp: "{{ item.regexp }}"
+      line: "{{ item.line }}"
+    with_items:
+     - { regexp: "#listen_addresses = 'localhost'", line: "listen_addresses = '*'"}
+     - { regexp: '#wal_level = replica', line: 'wal_level = replica' }
+     - { regexp: '#hot_standby = on', line: 'hot_standby = on' }
+     - { regexp: "#restore_command = ''", line: "restore_command = 'rsync -a  postgres@{{ hostvars['host01'].ansible_default_ipv4.address }}:/opt/pg_archives/%f %p'" }
+     - { regexp: "#recovery_target_timeline = 'latest'", line: "recovery_target_timeline = 'latest'" }
+ 
+  - name: Update pg_hba.conf
+    blockinfile:
+      path: /etc/postgresql/13/main/pg_hba.conf
+      insertafter: '#host replication postgres ::1/128 ident'
+      block: |
+        # Localhost
+        host replication replica 127.0.0.1/32 trust
+        # PostgreSQL Master IP address
+        host replication {{replication_user}} {{ ansible_default_ipv4.address}}/32 trust
+        # PostgreSQL Slave IP address
+        host replication {{replication_user}} {{ hostvars['host01'].ansible_default_ipv4.address }}/32 trust
+        #Connect PgAdmin
+        host  all all 0.0.0.0/0 md5
+  
+  - name: Start PostgreSQL server
+    systemd: 
+     name: postgresql
+     enabled: yes
+     state: started
+
+- name: Setup db
+  hosts: host01
+  become: yes
+  gather_facts: yes
+  tasks:
+   - name: copy Sql file
+     copy:
+       src: ../files/sqlinit.sql
+       dest: "/home/ansible/"
+       owner: postgres
+       group: postgres
+       mode: '770'
+
+   - name: exec SQL qery
+     shell:  su - postgres -c "PGPASSWORD={{ db_password }} psql -f /home/ansible/sqlinit.sql -d replication"
+
+- name: setup py environment
+  hosts: host01
+  become: yes
+  gather_facts: no
+  tasks:
+   - name: copy requrinments.txt
+     copy:
+       src: ../files/requirements.txt
+       dest: "/home/ansible/"
+       owner: ansible
+       group: ansible
+       mode: '770'
+       
+   - name: Install pip requrinments.txt
+     shell:  pip install -r /home/ansible/requirements.txt
+   
+   - name: Copy bot folder
+     copy:
+       src: ../files/bot/Bot1.py
+       dest: "/home/ansible/bot/"
+       owner: ansible
+       group: ansible
+       mode: '777'
+ 
+   - name: copy env
+     copy:
+      src: ../files/bot/.env
+      dest: "/home/ansible/bot/"
+      owner: ansible
+      group: ansible
+      mode: '777'    
+
+   - name: exec script
+     shell: python3 /home/ansible/bot/Bot1.py &
