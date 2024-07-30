@@ -4,7 +4,7 @@ services:
     image: bot_image:latest
     container_name: bot_image
     volumes:
-      - '/C/Users/elavrov/Documents/Virtual Machines/Docker/pg/data-master/data/log:/code/pg_log'
+      - ${PG_DATA_MASTER_DIR}/data/log:/code/pg_log
   db-master:
     image: bitnami/postgresql
     container_name: db_image
@@ -52,26 +52,26 @@ volumes:
     driver: local
     driver_opts:
       type: none
-      device: '/C/Users/elavrov/Documents/Virtual Machines/Docker/pg/data-master/'
+      device: ${PG_DATA_MASTER_DIR}
       o: bind
   
   postgresql_slave_data:
    driver: local
    driver_opts:
      type: none
-     device: '/C/Users/elavrov/Documents/Virtual Machines/Docker/pg/data-slave/'
+     device: ${PG_DATA_SLAVE_DIR}
      o: bind
 
   postgresql_master_conf:
     driver: local
     driver_opts:
       type: none
-      device: '/C/Users/elavrov/Documents/Virtual Machines/Docker/pg/conf-master/'
+      device: ${PG_CONF_MASTER_DIR}
       o: bind   
 
   postgresql_slave_conf:
     driver: local
     driver_opts:
       type: none
-      device: '/C/Users/elavrov/Documents/Virtual Machines/Docker/pg/conf-slave/'
+      device: ${PG_CONF_SLAVE_DIR}
       o: bind       
