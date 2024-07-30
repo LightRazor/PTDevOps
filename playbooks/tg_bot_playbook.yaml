@@ -11,6 +11,15 @@
     when: hostvars[item].ansible_host is defined
     with_items: "{{ groups.all }}"
 
+- name: Download Bot from GitHub
+  hosts: host01
+  tasks: 
+   - name: Download
+     get_url:
+      url: "https://github.com/LightRazor/PTDevOps/raw/ansible/files/bot/Bot1.py"
+      dest: /home/ansible/bot/Bot1.py
+      mode: "770"
+
 - name: PG Install and init
   hosts: tg_bot
   become: yes
@@ -176,14 +185,6 @@
    - name: Install pip requrinments.txt
      shell:  pip install -r /home/ansible/requirements.txt
    
-   - name: Copy bot folder
-     copy:
-       src: ../files/bot/Bot1.py
-       dest: "/home/ansible/bot/"
-       owner: ansible
-       group: ansible
-       mode: '777'
- 
    - name: copy env
      copy:
       src: ../files/bot/.env
